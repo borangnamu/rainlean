@@ -1,0 +1,17 @@
+# Repository policy
+# Track the android-app-builder workspace, harness, and scaffold files.
+# Ignore generated files inside subprojects via their local .gitignore files.
+
+# Root-level editor settings
+/.idea/
+/.vscode/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Log and backup files
+*.log
+*.bak
+*.swp
+*~

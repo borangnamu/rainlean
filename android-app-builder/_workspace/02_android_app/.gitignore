@@ -1,0 +1,48 @@
+# Built artifacts
+/bin/
+/gen/
+/out/
+/build/
+/.gradle/
+/app/build/
+/.kotlin/
+*.apk
+*.aab
+
+# IDE settings and cache
+/.idea/
+*.iml
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+.externalNativeBuild/
+.cxx/
+
+# Local configuration files
+/local.properties
+/local copy.properties
+
+# Log files
+*.log
+
+# Android Studio - Captures and Profiling
+/captures/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Gradle distributions installed locally outside the wrapper
+/gradle-[0-9]*-bin.zip
+/gradle-[0-9]*/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Backup and swap files
+*.bak
+*.swp
+*~

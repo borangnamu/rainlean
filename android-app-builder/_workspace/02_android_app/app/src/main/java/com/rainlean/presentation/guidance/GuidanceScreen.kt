@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -19,7 +18,13 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,44 +46,126 @@ import com.rainlean.domain.model.WeatherSnapshot
 fun GuidanceScreen(
     viewModel: GuidanceViewModel,
     onRefresh: () -> Unit,
-    onForceRefreshForDryWeather: () -> Unit
+    onForceRefreshForDryWeather: () -> Unit,
+    onBannerToggle: (Boolean) -> Unit,
+    onOpenNotificationSettings: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
+    val bannerEnabled by viewModel.bannerEnabled.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        MaterialTheme.colorScheme.surface,
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                    )
-                )
+    // 권한 거부 시 Snackbar 표시
+    LaunchedEffect(state.showPermissionRationale) {
+        if (state.showPermissionRationale) {
+            val result = snackbarHostState.showSnackbar(
+                message = "알림 권한이 필요합니다",
+                actionLabel = "설정 열기"
             )
-    ) {
-        Column(
+            if (result == SnackbarResult.ActionPerformed) {
+                onOpenNotificationSettings()
+            }
+            viewModel.setShowPermissionRationale(false)
+        }
+    }
+
+    Scaffold(
+        snackbarHost = {
+            SnackbarHost(hostState = snackbarHostState) { data ->
+                Snackbar(snackbarData = data)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface
+    ) { paddingValues ->
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(paddingValues)
+                .background(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surface,
+                            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        )
+                    )
+                )
         ) {
-            Text(
-                text = "RainLean",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Text(
-                text = "위치와 기기 방향으로 우산 각도를 안내합니다",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    text = "RainLean",
+                    style = MaterialTheme.typography.headlineMedium
+                )
+                Text(
+                    text = "위치와 기기 방향으로 우산 각도를 안내합니다",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
 
-            StatusSection(state = state)
-            PrimaryGuidanceSection(state = state)
-            ActionSection(
-                onRefresh = onRefresh,
-                onForceRefreshForDryWeather = onForceRefreshForDryWeather
+                StatusSection(state = state)
+                PrimaryGuidanceSection(state = state)
+                BannerSection(
+                    bannerEnabled = bannerEnabled,
+                    onToggle = onBannerToggle
+                )
+                ActionSection(
+                    onRefresh = onRefresh,
+                    onForceRefreshForDryWeather = onForceRefreshForDryWeather
+                )
+            }
+        }
+    }
+}
+
+// ─── Banner Section ───────────────────────────────────────────────────────────
+
+@Composable
+private fun BannerSection(
+    bannerEnabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "배너 알림",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = if (bannerEnabled) "활성화됨 — 5초마다 방향 갱신"
+                               else "비활성화됨",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = bannerEnabled,
+                    onCheckedChange = onToggle
+                )
+            }
+            Text(
+                text = "잠금 화면/알림창에 우산 방향(☂)을 표시합니다.\n날씨는 15분마다 자동 갱신됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
@@ -90,7 +177,7 @@ fun GuidanceScreen(
 private fun StatusSection(state: GuidanceUiState) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
         )
@@ -180,7 +267,7 @@ private fun ConfidenceBadge(confidence: Confidence) {
         Confidence.LOW -> "신뢰도 낮음" to MaterialTheme.colorScheme.outline
     }
     Surface(
-        shape = RoundedCornerShape(12.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
         color = color.copy(alpha = 0.15f)
     ) {
         Text(
@@ -199,7 +286,7 @@ private fun PrimaryGuidanceSection(state: GuidanceUiState) {
     val guidance = state.guidance
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
@@ -219,7 +306,6 @@ private fun PrimaryGuidanceSection(state: GuidanceUiState) {
                 return@Column
             }
 
-            // Headline guidance
             Text(
                 text = "기울임 각도: ${guidance.tiltDeg.toInt()}°",
                 style = MaterialTheme.typography.headlineSmall,
@@ -230,7 +316,6 @@ private fun PrimaryGuidanceSection(state: GuidanceUiState) {
                 style = MaterialTheme.typography.bodyMedium
             )
 
-            // 2D top-down umbrella preview
             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 UmbrellaTopDownIndicator(
                     relativeDirectionDeg = guidance.relativeDirectionDeg,
@@ -279,7 +364,7 @@ private fun ActionSection(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(

@@ -49,6 +49,27 @@ C:\Users\sdf85\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r app\b
 - 위치 권한 허용
 - 네트워크 사용 가능 상태 확인
 
+### 배너 알림 권한 (Android 13+)
+배너 알림 기능은 앱 내 설정 화면에서 토글로 활성화한다.
+
+- **Android 13+(API 33)** 이상: 토글 ON 시 `POST_NOTIFICATIONS` 런타임 권한 요청 다이얼로그 표시
+  - 허용 → 즉시 배너 활성화
+  - 거부 → 토글 자동 OFF, Snackbar로 설정 링크 안내
+  - "다시 묻지 않음" 후 거부 → 앱 알림 설정 화면(`ACTION_APP_NOTIFICATION_SETTINGS`)으로 안내
+- **Android 12 이하(API < 33)**: 별도 권한 요청 없이 채널 수준에서 ON/OFF 가능
+
+#### 테스트 기기 강제 권한 설정 (ADB)
+```powershell
+# 권한 허용
+adb shell pm grant com.rainlean android.permission.POST_NOTIFICATIONS
+
+# 권한 취소 (거부 경로 테스트)
+adb shell pm revoke com.rainlean android.permission.POST_NOTIFICATIONS
+
+# 앱 알림 설정 열기 확인
+adb shell am start -a android.settings.APP_NOTIFICATION_SETTINGS -e android.provider.extra.APP_PACKAGE com.rainlean
+```
+
 4. 기능 점검
 - 메인 화면에서 `현재 위치로 다시 계산` 클릭
 - 비가 없으면 "우산 기울임 불필요" 메시지 확인

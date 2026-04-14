@@ -22,8 +22,11 @@ interface WeatherRepository {
 ```
 
 ## API 호출 주기
-- 위치/센서: 1초 주기(전면 화면일 때만)
-- 날씨: 60초 주기
+- 위치/센서: 1초 주기 (전면 화면일 때만, Rotation Vector Sensor)
+- 날씨: **15분 주기** (WorkManager `PeriodicWorkRequest`, 앱 백그라운드 포함)
+  - 이전 문서의 "60초 주기"는 초기 설계안이었으며, 실제 구현은 15분으로 확정
+  - `WeatherRefreshWorker`가 조회 후 `UmbrellaGuidanceCache`에 결과 기록
+  - 배너 알림 활성 시에도 동일 Worker 재사용 (별도 호출 없음)
 
 ## 보안/운영 주의
 - 완전 무서버 구조는 API 키 추출 위험이 있다.

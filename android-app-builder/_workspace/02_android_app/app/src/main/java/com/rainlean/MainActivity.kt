@@ -1,30 +1,45 @@
 package com.rainlean
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.location.LocationServices
 import com.rainlean.core.MotionMath
 import com.rainlean.core.MotionTuning
+import com.rainlean.notification.BannerPreferences
+import com.rainlean.notification.UmbrellaBannerService
+import com.rainlean.notification.WeatherRefreshScheduler
 import com.rainlean.presentation.guidance.GuidanceScreen
 import com.rainlean.presentation.guidance.GuidanceViewModel
 import com.rainlean.ui.theme.RainLeanTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import kotlin.math.sqrt
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
+
+    @Inject lateinit var bannerPreferences: BannerPreferences
+
     private val locationClient by lazy { LocationServices.getFusedLocationProviderClient(this) }
     private var currentViewModel: GuidanceViewModel? = null
     private var latestHeadingDeg: Double = 0.0
@@ -39,7 +54,8 @@ class MainActivity : ComponentActivity() {
     private var filteredLinearAccelMagnitude: Double = 0.0
     private var flatState: Boolean = false
 
-    private val permissionLauncher = registerForActivityResult(
+    // ── 위치 권한 런처 ────────────────────────────────────────────────────────
+    private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { results ->
         val fine = results[Manifest.permission.ACCESS_FINE_LOCATION] == true
@@ -49,6 +65,22 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // ── 알림 권한 런처 (Android 13+) ──────────────────────────────────────────
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            activateBanner()
+        } else {
+            // 거부됨 — shouldShowRationale=false 면 영구 거부 → 설정 화면 안내
+            currentViewModel?.setShowPermissionRationale(true)
+            lifecycleScope.launch {
+                bannerPreferences.setBannerEnabled(false)
+            }
+        }
+    }
+
+    // ── 센서 리스너 ───────────────────────────────────────────────────────────
     private val headingListener = object : SensorEventListener {
         private val rotationMatrix = FloatArray(9)
         private val orientation = FloatArray(3)
@@ -64,7 +96,6 @@ class MainActivity : ComponentActivity() {
             val rollRad = orientation[2].toDouble()
             val normalized = ((Math.toDegrees(azimuthRad) + 360.0) % 360.0)
             latestHeadingDeg = if (hasHeading) {
-                // Circular interpolation to avoid 359->1 jump artifacts.
                 val delta = (((normalized - latestHeadingDeg + 540.0) % 360.0) - 180.0)
                 (latestHeadingDeg + delta * 0.15 + 360.0) % 360.0
             } else {
@@ -76,19 +107,13 @@ class MainActivity : ComponentActivity() {
             val rawRollDeg = Math.toDegrees(rollRad)
             latestPitchDeg = if (hasPose) {
                 MotionMath.lerp(latestPitchDeg, rawPitchDeg, MotionTuning.ORIENTATION_ALPHA)
-            } else {
-                rawPitchDeg
-            }
+            } else rawPitchDeg
             latestRollDeg = if (hasPose) {
                 MotionMath.lerp(latestRollDeg, rawRollDeg, MotionTuning.ORIENTATION_ALPHA)
-            } else {
-                rawRollDeg
-            }
+            } else rawRollDeg
             latestAzimuthDeg = if (hasPose) {
                 MotionMath.circularLerp(latestAzimuthDeg, normalized, MotionTuning.ORIENTATION_ALPHA)
-            } else {
-                normalized
-            }
+            } else normalized
             hasPose = true
 
             val nowMs = System.currentTimeMillis()
@@ -134,6 +159,7 @@ class MainActivity : ComponentActivity() {
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
     }
 
+    // ── 생명주기 ──────────────────────────────────────────────────────────────
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
@@ -152,7 +178,9 @@ class MainActivity : ComponentActivity() {
                     onRefresh = { refreshWithCurrentLocation(vm) },
                     onForceRefreshForDryWeather = {
                         refreshWithCurrentLocation(vm, forceGuidanceForDryWeather = true)
-                    }
+                    },
+                    onBannerToggle = { requested -> handleBannerToggle(requested) },
+                    onOpenNotificationSettings = { openNotificationSettings() }
                 )
             }
         }
@@ -161,18 +189,20 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         rotationSensor?.let {
-            sensorManager.registerListener(
-                headingListener,
-                it,
-                SensorManager.SENSOR_DELAY_GAME
-            )
+            sensorManager.registerListener(headingListener, it, SensorManager.SENSOR_DELAY_GAME)
         }
         linearAccelSensor?.let {
-            sensorManager.registerListener(
-                linearAccelerationListener,
-                it,
-                SensorManager.SENSOR_DELAY_GAME
-            )
+            sensorManager.registerListener(linearAccelerationListener, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager.unregisterListener(headingListener)
+        sensorManager.unregisterListener(linearAccelerationListener)
+        // 배너 서비스를 위해 마지막 방위각 DataStore에 저장
+        lifecycleScope.launch {
+            bannerPreferences.saveLastHeadingDeg(latestHeadingDeg)
         }
     }
 
@@ -183,8 +213,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Re-arm auto-refresh if permission is already granted (e.g. returning from background).
-        // Skip if currentViewModel is null — onCreate hasn't run yet on fresh launch.
         val vm = currentViewModel ?: return
         val fine = ContextCompat.checkSelfPermission(
             this, Manifest.permission.ACCESS_FINE_LOCATION
@@ -195,25 +223,76 @@ class MainActivity : ComponentActivity() {
         if (fine || coarse) refreshWithCurrentLocation(vm)
     }
 
-    override fun onPause() {
-        super.onPause()
-        sensorManager.unregisterListener(headingListener)
-        sensorManager.unregisterListener(linearAccelerationListener)
+    // ── 배너 토글 처리 ────────────────────────────────────────────────────────
+
+    /**
+     * 사용자가 배너 알림 스위치를 누를 때 호출.
+     * ON: 알림 권한 확인 → (필요 시 요청) → 서비스 시작 + Worker 예약
+     * OFF: 서비스 중지 + Worker 취소 + DataStore 갱신
+     */
+    private fun handleBannerToggle(requested: Boolean) {
+        if (!requested) {
+            deactivateBanner()
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                this, Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+
+            if (granted) {
+                activateBanner()
+            } else {
+                // 런타임 권한 요청
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        } else {
+            // API 32 이하 — 채널 수준에서 사용자 관리, 별도 권한 불필요
+            activateBanner()
+        }
     }
+
+    /** 배너를 활성화. DataStore 저장 → Worker 예약 → 서비스 시작 순서. */
+    private fun activateBanner() {
+        lifecycleScope.launch {
+            bannerPreferences.setBannerEnabled(true)
+        }
+        WeatherRefreshScheduler.schedule(this)
+        val serviceIntent = Intent(this, UmbrellaBannerService::class.java)
+        ContextCompat.startForegroundService(this, serviceIntent)
+    }
+
+    /** 배너를 비활성화. 서비스 중지 → Worker 취소 → DataStore 저장 순서. */
+    private fun deactivateBanner() {
+        stopService(Intent(this, UmbrellaBannerService::class.java))
+        WeatherRefreshScheduler.cancel(this)
+        lifecycleScope.launch {
+            bannerPreferences.setBannerEnabled(false)
+        }
+    }
+
+    /** 알림 설정 화면 열기 (권한 영구 거부 안내). */
+    private fun openNotificationSettings() {
+        val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+            putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        }
+        startActivity(intent)
+    }
+
+    // ── 위치 + 새로고침 ───────────────────────────────────────────────────────
 
     private fun ensureLocationPermissionThenRefresh(viewModel: GuidanceViewModel) {
         val fine = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
+            this, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
         val coarse = ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_COARSE_LOCATION
+            this, Manifest.permission.ACCESS_COARSE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
         if (fine || coarse) {
             refreshWithCurrentLocation(viewModel)
         } else {
-            permissionLauncher.launch(
+            locationPermissionLauncher.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
                     Manifest.permission.ACCESS_COARSE_LOCATION
@@ -228,12 +307,10 @@ class MainActivity : ComponentActivity() {
     ) {
         val vm = viewModel ?: return
         if (ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
+                this, Manifest.permission.ACCESS_FINE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED &&
             ContextCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_COARSE_LOCATION
+                this, Manifest.permission.ACCESS_COARSE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED
         ) return
 
@@ -242,37 +319,15 @@ class MainActivity : ComponentActivity() {
             val lat = location?.latitude ?: 37.5665
             val lon = location?.longitude ?: 126.9780
             if (forceGuidanceForDryWeather) {
-                vm.refresh(
-                    lat = lat,
-                    lon = lon,
-                    userHeadingDeg = latestHeadingDeg,
-                    forceGuidanceForDryWeather = true,
-                    isLocationFallback = isLocationFallback
-                )
+                vm.refresh(lat, lon, latestHeadingDeg, forceGuidanceForDryWeather = true, isLocationFallback = isLocationFallback)
             } else {
-                vm.startAutoRefresh(
-                    lat = lat,
-                    lon = lon,
-                    isLocationFallback = isLocationFallback,
-                    headingProvider = { latestHeadingDeg }
-                )
+                vm.startAutoRefresh(lat, lon, isLocationFallback = isLocationFallback, headingProvider = { latestHeadingDeg })
             }
         }.addOnFailureListener {
             if (forceGuidanceForDryWeather) {
-                vm.refresh(
-                    lat = 37.5665,
-                    lon = 126.9780,
-                    userHeadingDeg = latestHeadingDeg,
-                    forceGuidanceForDryWeather = true,
-                    isLocationFallback = true
-                )
+                vm.refresh(37.5665, 126.9780, latestHeadingDeg, forceGuidanceForDryWeather = true, isLocationFallback = true)
             } else {
-                vm.startAutoRefresh(
-                    lat = 37.5665,
-                    lon = 126.9780,
-                    isLocationFallback = true,
-                    headingProvider = { latestHeadingDeg }
-                )
+                vm.startAutoRefresh(37.5665, 126.9780, isLocationFallback = true, headingProvider = { latestHeadingDeg })
             }
         }
     }

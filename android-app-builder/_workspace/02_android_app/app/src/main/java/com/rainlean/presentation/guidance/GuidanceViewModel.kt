@@ -7,14 +7,18 @@ import com.rainlean.domain.model.UmbrellaGuidance
 import com.rainlean.domain.model.WeatherSnapshot
 import com.rainlean.domain.model.WeatherSource
 import com.rainlean.domain.usecase.ComputeUmbrellaTiltUseCase
+import com.rainlean.notification.BannerPreferences
+import com.rainlean.notification.UmbrellaGuidanceCache
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlin.math.max
 import javax.inject.Inject
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 private const val AUTO_REFRESH_INTERVAL_MS = 15 * 60 * 1000L // 15분
@@ -27,7 +31,8 @@ data class GuidanceUiState(
     val isForcedTestMode: Boolean = false,
     val isLocationFallback: Boolean = false,
     val lastUpdatedEpochSec: Long? = null,
-    val devicePose: DevicePoseUi = DevicePoseUi()
+    val devicePose: DevicePoseUi = DevicePoseUi(),
+    val showPermissionRationale: Boolean = false
 )
 
 data class DevicePoseUi(
@@ -41,11 +46,17 @@ data class DevicePoseUi(
 @HiltViewModel
 class GuidanceViewModel @Inject constructor(
     private val weatherRepository: WeatherRepository,
-    private val computeUmbrellaTiltUseCase: ComputeUmbrellaTiltUseCase
+    private val computeUmbrellaTiltUseCase: ComputeUmbrellaTiltUseCase,
+    private val cache: UmbrellaGuidanceCache,
+    private val bannerPreferences: BannerPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GuidanceUiState())
     val uiState: StateFlow<GuidanceUiState> = _uiState.asStateFlow()
+
+    /** DataStore 기반 배너 활성 여부. UI에서 Switch 상태로 사용. */
+    val bannerEnabled: StateFlow<Boolean> = bannerPreferences.bannerEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
     private var autoRefreshJob: Job? = null
 
@@ -65,12 +76,17 @@ class GuidanceViewModel @Inject constructor(
                 isShaking = isShaking
             )
         )
+        // 배너 서비스를 위해 캐시에도 방위각 업데이트
+        cache.setHeading(azimuthDeg)
+    }
+
+    fun setShowPermissionRationale(show: Boolean) {
+        _uiState.value = _uiState.value.copy(showPermissionRationale = show)
     }
 
     /**
      * 위치 확보 후 호출. 15분마다 자동으로 날씨를 다시 조회한다.
-     * [headingProvider]는 매 갱신 시점마다 최신 방위각을 반환하는 람다로,
-     * 앱 사용 중 기기 방향이 바뀌어도 올바른 상대 방향을 계산한다.
+     * [headingProvider]는 매 갱신 시점마다 최신 방위각을 반환하는 람다.
      */
     fun startAutoRefresh(
         lat: Double,
@@ -127,6 +143,9 @@ class GuidanceViewModel @Inject constructor(
             val weather = weatherResult.getOrThrow()
             val weatherForGuidance = weather.withForcedRainIfNeeded(forceGuidanceForDryWeather)
             val guidance = computeUmbrellaTiltUseCase.execute(weatherForGuidance, userHeadingDeg)
+
+            // 배너 서비스가 읽을 수 있도록 캐시 갱신
+            cache.setGuidance(guidance, weather)
 
             _uiState.value = _uiState.value.copy(
                 isLoading = false,

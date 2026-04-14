@@ -85,7 +85,19 @@ dependencies {
     ksp("com.google.dagger:hilt-compiler:2.52")
     implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
 
+    // WorkManager + Hilt integration
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+    implementation("androidx.hilt:hilt-work:1.2.0")
+    ksp("androidx.hilt:hilt-compiler:1.2.0")
+
+    // DataStore (배너 ON/OFF 상태, 마지막 방위각 영속)
+    implementation("androidx.datastore:datastore-preferences:1.1.1")
+
+    // LifecycleService (ForegroundService에서 LifecycleOwner 사용)
+    implementation("androidx.lifecycle:lifecycle-service:2.8.7")
+
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
 }
 
 ksp {
